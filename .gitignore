@@ -1,0 +1,5 @@
+*~
+*.o
+cdrparity
+cdrrescue
+cdrverify

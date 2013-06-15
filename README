@@ -1,0 +1,42 @@
+Append redundant data to cdrom image to recover data from bad sectors.
+----------------------------------------------------------------------
+
+This software has a similar goal to Parchive
+<https://en.wikipedia.org/wiki/Parchive>.  To add redundant parity data
+to a set of files for the purpose of recovering those files from storage
+media that has corrupted or missing pieces.  
+
+Unlike Parchive, cdrparity appends parity data to the end of a cd-rom (or
+dvd-rom or bd-rom) image without modifying the content of the image or
+interfering with a reader that is not aware of this added data.  The 
+additional parity data is essentially invisible to a reader that is not
+aware of its presence.
+
+The goal of this project is to fill all the remaining space on a disc with
+redundant parity data which can later be used to recover the data from a
+similarily sized section of bad sectors.  
+
+The final layout of the disc becomes:
+
+  + standard filesystem image (iso9660 or utf, encrypted or not)
+  + marker sector
+  + parity data
+  + marker sector (identical to first)
+
+The parity data is calculated as a simple xor of the main data chopped into
+sections each with size equal to the size of the parity data.  This is similar
+to how RAID 5 operates.
+
+The program cdrparity adds this additional data to a pre-generated image.
+Note that simultaneous generation of the image and burning is not supported.
+
+The program cdrverify can be used to verify that the final image is correctly
+formed.  This program was intentionally written in C (instead of C++) and
+shares no code with cdrparity so as to serve as a verification of the correct
+operation of cdrparity.
+
+The program cdrrescue can be used to recover a disc that has bad sectors.
+What it does is attempt to read sectors (both the data and parity) until
+enough data is read to recover the original image.  Where bad sectors are
+found, the program simply moves on instead of terminating with an error
+or getting stuck in an infinite loop of retries.  
