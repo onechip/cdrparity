@@ -30,7 +30,7 @@
 #define BUF_SIZE (1024*1024)
 
 #define MARKER_INTS (8)
-#define MARKER_BYTES (MARKER_INTS*sizeof(uint64_t))
+#define MARKER_BYTES (MARKER_INTS*(int)sizeof(uint64_t))
 
 #define MAX_SCAN (16*1024*1024)
 
@@ -102,10 +102,10 @@ static void memxor(void* dest, const void* src, size_t n) {
     }
 }
 
-static int read_and_xor(void* dest, int in, size_t n) {
+static int read_and_xor(void* dest, int in, ssize_t n) {
     unsigned char* buf = malloc(BUF_SIZE);
     while (n > 0) {
-        size_t n_buf;
+        ssize_t n_buf;
         if (n < BUF_SIZE)
             n_buf = n;
         else
@@ -196,7 +196,7 @@ int main(int argc, char*argv[]) {
     if (marker[0] == SIG1R)
         printf("marker needs to be byte-swapped\n");
 
-    const uint64_t blocksize = bswap_marker(marker[2],marker[0]);    // bytes
+    const int64_t blocksize = bswap_marker(marker[2],marker[0]);     // bytes
     const uint64_t imagesize = bswap_marker(marker[3],marker[0]);    // blocks
     const uint64_t stripesize = bswap_marker(marker[4],marker[0]);   // blocks
     const uint64_t nstripes = bswap_marker(marker[5],marker[0]);
@@ -204,8 +204,8 @@ int main(int argc, char*argv[]) {
 
     const uint64_t imagebytes = imagesize * blocksize;
     const uint64_t stripebytes = stripesize * blocksize;
-    const uint64_t mainbytes = (stripesize - stripeoffset) * blocksize;
-    const uint64_t offsetbytes = stripeoffset * blocksize;
+    const int64_t mainbytes = (stripesize - stripeoffset) * blocksize;
+    const int64_t offsetbytes = stripeoffset * blocksize;
 
     if (blocksize < MARKER_BYTES || (blocksize & (blocksize-1))) {
         printf("INVALID BLOCK SIZE (%ld)\n",blocksize);

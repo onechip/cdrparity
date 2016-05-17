@@ -128,7 +128,7 @@ static bool check_for_marker(Marker& m, ssize_t block_size, int fd) {
 static bool process_file(const char* isofile,
                          off64_t cdr_size,
                          off_t block_size,
-                         off_t buffer_size,
+                         off_t,  //  buffer_size
                          bool force,
                          bool strip,
                          bool pad) {
