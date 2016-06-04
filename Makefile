@@ -2,29 +2,32 @@ CC		= gcc
 CXX		= g++
 CXXLD		= g++
 
-PREFFLAGS	= -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -Wall -Wextra -O2
+PREFFLAGS	= -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -Wall -Wextra -Os
 CFLAGS		= $(PREFFLAGS)
-CXXFLAGS	= $(PREFFLAGS)
+CXXFLAGS	= $(PREFFLAGS) -std=c++11
 LDFLAGS		=
 
-ALL_PROGS	= cdrparity cdrverify cdrrescue
-COMMON_OBJS	= Marker.o
-COMMON_HEADERS	=
+PROGS	= siphash24_test cdrparity cdrparity-v1 cdrverify cdrrescue
 
+all:	$(PROGS)
 
-all:	$(ALL_PROGS)
+install:	$(PROGS)
+	cp $(PROGS) ../../bin
 
-install:	$(ALL_PROGS)
-	cp $(ALL_PROGS) ../../bin
-
-cdrparity:	$(COMMON_OBJS) cdrparity.o
+siphash24_test:	siphash24_test.o siphash24.o siphash24inc.o
 	$(CXXLD) -o $@ $^ $(LDFLAGS)
 
-cdrrescue:	$(COMMON_OBJS) cdrrescue.o
+cdrparity:	cdrparity.o siphash24inc.o
 	$(CXXLD) -o $@ $^ $(LDFLAGS)
 
-cdrverify:	cdrverify.o
+cdrparity-v1:	cdrparity-v1.o Marker.o
+	$(CXXLD) -o $@ $^ $(LDFLAGS)
+
+cdrverify:	cdrverify.o cdrverify-v1.o cdrverify-v2.o siphash24.o
+	$(CXXLD) -o $@ $^ $(LDFLAGS)
+
+cdrrescue:	cdrrescue.o Marker.o
 	$(CXXLD) -o $@ $^ $(LDFLAGS)
 
 clean:
-	rm -f *% *~ *.o core $(ALL_PROGS) keylist.cpp
+	rm -f $(PROGS) *.o *~ core

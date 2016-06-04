@@ -19,9 +19,9 @@ similarily sized section of bad sectors.
 The final layout of the disc becomes:
 
   + standard filesystem image (iso9660 or utf, encrypted or not)
-  + marker sector
+  + marker
   + parity data
-  + marker sector (identical to first)
+  + marker (identical to first)
 
 The parity data is calculated as a simple xor of the main data chopped into
 sections each with size equal to the size of the parity data.  This is similar
@@ -40,3 +40,13 @@ What it does is attempt to read sectors (both the data and parity) until
 enough data is read to recover the original image.  Where bad sectors are
 found, the program simply moves on instead of terminating with an error
 or getting stuck in an infinite loop of retries.  
+
+
+Version 2
+=========
+
+With v2 a checksum (siphash24) of each stripe and the parity are calculated
+and stored in the marker.  Without this checksum, the location of errors could
+only be determined if an i/o error occurs.  With the checksum, stripes can be
+identified as corrupt even in cases where the read was successful.  This
+increases the probability of successfully recovering the image.

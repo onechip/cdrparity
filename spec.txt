@@ -1,0 +1,47 @@
+
+general structure:
+  data (nstripes of stripesize blocks -- last stripe may be short)
+  marker
+  parity stripe
+  marker -- exact copy of first marker
+(each element is a multiple of blocksize)
+
+
+v1 marker: 64 bytes duplicated to fill block
+  uint64_t signature1;
+  uint64_t signature2;
+  uint64_t blocksize;       // bytes
+  uint64_t imagesize;       // blocks
+  uint64_t stripesize;      // blocks
+  uint64_t nstripes;
+  uint64_t stripeoffset;    // blocks
+  uint64_t checksum;
+
+
+v2 marker: block 0
+  uint32_t signature;       // 0x972fae43
+  uint16_t log2_blocksize;  // min 6 default 11 max 20
+  uint16_t index;           // 0
+  uint64_t date_time;       // nanoseconds since epoch
+
+  uint32_t num_stripes;
+  uint32_t first_blocks;    // stripe 0 may have fewer blocks
+  uint32_t stripe_blocks;   // stripe 1 and up
+  uint32_t image_blocks;    // first_blocks + stripe_blocks*(num_stripes-1)
+
+  uint64_t parity_hash;
+  uint64_t stripe_hashes[];
+  uint64_t checksum;        // hash of block (except checksum field)
+
+v2 marker: blocks 1+
+  uint32_t signature;
+  uint16_t log2_blocksize;
+  uint16_t index;           // i
+  uint64_t stripe_hashes[];
+  uint64_t checksum;        // hash of block (except checksum field)
+
+hash using siphash24
+for marker blocks, key is zero
+for stripe, key is first 128 bits of marker block 0 with index set to stripe number
+for parity, index is num_stripes
+

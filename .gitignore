@@ -1,5 +1,7 @@
 *~
 *.o
+siphash24_test
 cdrparity
+cdrparity-v1
 cdrrescue
 cdrverify

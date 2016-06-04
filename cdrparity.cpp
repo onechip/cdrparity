@@ -1,5 +1,5 @@
 
-/* Copyright 2013 Chris Studholme.
+/* Copyright 2016 Chris Studholme
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <vector>
 #include <iostream>
 
@@ -26,115 +27,140 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <unistd.h>
 
-#include "Marker.h"
+#include "siphash24.h"
 
 
-#define MB (1024*1024)
+static constexpr auto MB = 1024*1024;
 
+namespace {
+    struct auto_file_descriptor {
+        const int fd;
+        explicit auto_file_descriptor(int fd) : fd(fd) {}
+        ~auto_file_descriptor() {
+            if (fd != -1) close(fd);
+        }
+        inline operator int() const {
+            return fd;
+        }
+    };
 
-struct auto_file_descriptor {
-    const int fd;
-    explicit auto_file_descriptor(int fd) : fd(fd) {}
-    ~auto_file_descriptor() {
-        if (fd != -1) close(fd);
-    }
-    inline operator int() const {
-        return fd;
-    }
-};
+    struct marker_zero {
+        uint32_t signature;
+        uint16_t block_log2;
+        uint16_t index;
+
+        uint64_t datetime;
+
+        uint32_t num_stripes;
+        uint32_t first_blocks;
+        uint32_t stripe_blocks;
+        uint32_t image_blocks;
+
+        uint64_t parity_hash;
+        uint64_t stripe_hashes[];
+        //uint64_t checksum;
+    };
+
+    struct marker_one {
+        uint32_t signature;
+        uint16_t block_log2;
+        uint16_t index;
+        uint64_t stripe_hashes[];
+        //uint64_t checksum;
+    };
+
+    static constexpr uint32_t SIG  = 0x972fae43u;
+    static constexpr uint32_t SIGR = 0x43ae2f97u;
+}
+
+static unsigned ilog2(unsigned x) {
+    unsigned r = 0;
+    while (x >>= 1) ++r;
+    return r;
+}
 
 template <typename T>
-struct unique_array {
-    typedef T value_type;
-    value_type* arr;
-    explicit unique_array(value_type* arr) : arr(arr) {}
-    ~unique_array() { delete[] arr; }
-    value_type* get() { return arr; }
-    const value_type* get() const { return arr; }
-    value_type& operator[](unsigned i) { return arr[i]; }
-    const value_type& operator[](unsigned i) const { return arr[i]; }
+static void byteswap_in_place(T& x) {
+    auto p = reinterpret_cast<unsigned char*>(&x);
+    for (unsigned i = 0; i < sizeof(T)/2; ++i)
+        std::swap(p[i],p[sizeof(T)-1-i]);
+}
 
-private:
-    unique_array(const unique_array&);
-    unique_array& operator=(const unique_array&);
-};
-
-static bool read_and_xor(void* _stripe, 
-                         size_t stripesize, ssize_t block_size, 
-                         int fd) {
-    unsigned long* stripe = (unsigned long*)_stripe;
-    const size_t long_per_block = block_size / sizeof(unsigned long);
-    unsigned long buf[long_per_block];
-    while (stripesize > 0) {
-        // read block
-        if (read(fd,buf,block_size) != block_size)
+static bool check_for_marker(marker_zero& m, ssize_t block_size, int fd) {
+    for (int i = 1; ; ) {
+        if (lseek64(fd,-i*block_size,SEEK_END) < 0) {
+            std::cerr << "cdrparity: seek failed (" << strerror(errno) << ")"
+                      << std::endl;
             return false;
+        }
+        if (read(fd,&m,block_size) != block_size) {
+            std::cerr << "cdrparity: read failed (" << strerror(errno) << ")"
+                      << std::endl;
+            return false;
+        }
+        if (m.signature == SIGR) {
+            byteswap_in_place(m.signature);
+            byteswap_in_place(m.block_log2);
+            byteswap_in_place(m.index);
+            assert(m.signature == SIG);
+        }
+        if (m.signature == SIG) {
+            if (block_size != (1<<m.block_log2))
+                break;
+            const int j = 1 + m.index;
+            if (j == 1)
+                return true;
+            else if (i < j) {
+                i = j;
+                continue;
+            }
+        }
+        break;
+    }
+    return false;
+}
+
+static bool read_and_xor(siphash_ctx& ctx,
+                         void* _stripe, size_t stripe_blocks,
+                         void* _block, ssize_t block_bytes, 
+                         int fd) {
+    assert(block_bytes > 0 &&
+           size_t(block_bytes) >= sizeof(unsigned long) &&
+           ((block_bytes-1)&block_bytes) == 0);
+    auto buf = static_cast<unsigned long*>(_block);
+    auto stripe = static_cast<unsigned long*>(_stripe);
+    const auto long_per_block = block_bytes / sizeof(unsigned long);
+    for ( ; stripe_blocks > 0; --stripe_blocks) {
+        // read block
+        if (read(fd,buf,block_bytes) != block_bytes)
+            return false;
+        siphash_update(&ctx, buf, block_bytes);
         // xor with stripe
-        for (size_t j = 0; j < long_per_block; ++j)
-            *stripe++ ^= buf[j];
-        --stripesize;
+        for (size_t j = 0; j < long_per_block; ++j, ++stripe)
+            *stripe ^= buf[j];
     }
     return true;
 }
 
-static off64_t parse_size(const char* s) {
-    char* end;
-    off64_t result = strtol(s,&end,10);
-    if (strcasecmp(end,"k") == 0) {
-        result *= 1024;
-    }
-    else if (strcasecmp(end,"m") == 0) {
-        result *= 1024*1024;
-    }
-    else if (end[0]) {
-        // invalid suffix, should do something?
-    }
-    return result;
-}
-
-static bool check_for_marker(Marker& m, ssize_t block_size, int fd) {
-    // check for existing parity
-    if (lseek64(fd,-block_size,SEEK_END) < 0) {
-        std::cerr << "cdrparity: seek failed (" << strerror(errno) << ")"
-                  << std::endl;
-        return false;
-    }
-    char buf[block_size];
-    if (read(fd,buf,block_size) != block_size) {
-        std::cerr << "cdrparity: read failed (" << strerror(errno) << ")"
-                  << std::endl;
-        return false;
-    }
-    bool found = false;
-    for (size_t i = 0; i <= block_size - sizeof(Marker); ++i) {
-        if (memcmp(buf+i,&Marker::SIG1,sizeof(Marker::SIG1)) == 0 ||
-            memcmp(buf+i,&Marker::SIG1R,sizeof(Marker::SIG1R)) == 0) {
-            memcpy(&m,buf+i,sizeof(Marker));
-            if (m.is_valid()) {
-                m.fix_endian();
-                found = true;
-                break;
-            }
-        }
-    }
-    if (lseek(fd,0,SEEK_SET) != 0)
-        std::cerr << "cdrparity: seek failed (" << strerror(errno) << ")"
-                  << std::endl;
-    return found;
-}
-
 static bool process_file(const char* isofile,
-                         off64_t cdr_size,
-                         off_t block_size,
-                         off_t,  //  buffer_size
+                         int64_t cdr_bytes,
+                         int block_bytes,
+                         size_t,  //  buffer_bytes
                          bool force,
                          bool strip,
                          bool pad) {
 
+    // buffer for single block
+    assert(block_bytes >= 64 && ((block_bytes-1)&block_bytes) == 0);
+    auto block =
+        std::unique_ptr<unsigned char[]>(new unsigned char[block_bytes]);
+
     // stat image file
     struct stat64 s;
+    static_assert(sizeof(s.st_size) > 4, "need 64-bit file size");
     if (stat64(isofile,&s) != 0) {
         std::cerr << "cdrparity: stat failed (" << strerror(errno) << ")"
                   << std::endl;
@@ -142,7 +168,7 @@ static bool process_file(const char* isofile,
     }
     
     // open image file
-    const auto_file_descriptor fd(open(isofile,O_RDWR|O_LARGEFILE));
+    const auto fd = auto_file_descriptor(open(isofile,O_RDWR|O_LARGEFILE));
     if (fd == -1) {
         std::cerr << "cdrparity: open failed (" << strerror(errno) << ")"
                   << std::endl;
@@ -150,8 +176,13 @@ static bool process_file(const char* isofile,
     }
     
     // compute image size (in blocks) and pad if necessary
-    off_t imagesize = s.st_size / block_size;
-    if (s.st_size != imagesize * block_size) {
+    auto image_blocks = s.st_size / block_bytes;
+    if (image_blocks < 0 || (image_blocks>>30) != 0) {
+        std::cerr << "cdrparity: block size too small / too many blocks"
+                  << std::endl;
+        return false;
+    }
+    if (s.st_size != image_blocks * block_bytes) {
         if (!pad) {
             std::cerr << "cdrparity: image is not a multiple of block size"
                       << std::endl;
@@ -162,10 +193,11 @@ static bool process_file(const char* isofile,
                       << std::endl;
             return false;
         }
-        const ssize_t pad_needed = ++imagesize * block_size - s.st_size;
-        const std::vector<unsigned char> zero_buf(pad_needed,0);
+        const auto pad_bytes = ++image_blocks * block_bytes - s.st_size;
+        assert(pad_bytes <= block_bytes);
+        memset(block.get(),0,pad_bytes);
         std::cout << "note: padding image file" << std::endl;
-        if (write(fd,zero_buf.data(),zero_buf.size()) != pad_needed) {
+        if (write(fd,block.get(),pad_bytes) != pad_bytes) {
             std::cerr << "cdrparity: write failed (" << strerror(errno) << ")"
                       << std::endl;
             return false;
@@ -176,15 +208,38 @@ static bool process_file(const char* isofile,
             return false;
         }
     }
-    if (imagesize < 1) {
+    if (image_blocks <= 0) {
         std::cerr << "cdrparity: file is empty" << std::endl;
         return false;
     }
-    std::cout << "note: image file has " << imagesize << " blocks" << std::endl;
+    std::cout << "note: image file has " << image_blocks << " blocks"
+              << std::endl;
+    
+    // guess disk size if unknown
+    int cdr_blocks = cdr_bytes / block_bytes;
+    if (cdr_blocks == 0) {
+        // guess cdr_blocks
+        if (image_blocks <= 649*MB/block_bytes)
+            cdr_blocks = 650*MB/block_bytes;
+        else if (image_blocks <= 699*MB/block_bytes)
+            cdr_blocks = 700*MB/block_bytes;
+        else if (image_blocks <= int64_t(4481)*MB/block_bytes)
+            cdr_blocks = int64_t(4482)*MB/block_bytes;
+        else if (image_blocks <= int64_t(23599)*MB/block_bytes)
+            cdr_blocks = int64_t(23600)*MB/block_bytes;
+        else {
+            std::cerr << "cdrparity: large image, must specify final size"
+                      << std::endl;
+            return false;
+        }
+        std::cout << "note: final size is assumed to be "
+                  << (int64_t(cdr_blocks)*block_bytes/MB) << " MB ("
+                  << cdr_blocks << " blocks)" << std::endl;
+    }
 
     // check for existing parity
-    Marker old;
-    if (check_for_marker(old,block_size,fd)) {
+    marker_zero& old = *reinterpret_cast<marker_zero*>(block.get());
+    if (check_for_marker(old,block_bytes,fd)) {
         std::cout << "note: parity data found in file" << std::endl;
         if (strip) {
             std::cerr << "cdrparity: strip not implemented" << std::endl;
@@ -198,126 +253,156 @@ static bool process_file(const char* isofile,
         else
             std::cout << "note: forcing additional parity data" << std::endl;
     }
-    
-    // guess disk size if unknown
-    off_t disksize = cdr_size / block_size;
-    if (disksize == 0) {
-        // guess disksize
-        if (imagesize <= 649*MB/block_size)
-            disksize = 650*MB/block_size;
-        else if (imagesize <= 699*MB/block_size)
-            disksize = 700*MB/block_size;
-        else {
-            std::cerr << "cdrparity: large image, must specify final size"
-                      << std::endl;
-            return false;
-        }
-        std::cout << "note: final size is assumed to be "
-                  << (disksize*block_size/MB) << " MB ("
-                  << disksize << " blocks)" << std::endl;
-    }
-
-    // compute stripe size
-    ssize_t stripesize = disksize - imagesize - 2;
-    if (stripesize < 1) {
-        std::cerr << "cdrparity: final size is too small for image"
+    if (lseek(fd,0,SEEK_SET) != 0) {
+        std::cerr << "cdrparity: seek failed (" << strerror(errno) << ")"
                   << std::endl;
         return false;
     }
-    if (stripesize > imagesize)
-        stripesize = imagesize;
-    const int nstripes = (imagesize+stripesize-1) / stripesize;
-    const ssize_t laststripesize = imagesize - stripesize*(nstripes-1);
-    const ssize_t stripeoffset = stripesize - laststripesize;
+
+    // stripes per marker block
+    const auto m0_lim = block_bytes / sizeof(uint64_t) - 6;
+    const auto mi_lim = block_bytes / sizeof(uint64_t) - 2;
     
-    if (nstripes > 1)
-        std::cout << "note: dividing image into " << nstripes << " stripes of "
-                  << stripesize << " blocks each" << std::endl
-                  << "\tlast stripe has " << laststripesize << " blocks"
+    // compute stripe and marker size
+    int stripe_blocks;
+    int num_stripes;
+    int marker_blocks = 1;
+    for (int lim = m0_lim; ; lim += mi_lim, ++marker_blocks) {
+        stripe_blocks = cdr_blocks - image_blocks - 2*marker_blocks;
+        if (stripe_blocks < 1) {
+            std::cerr << "cdrparity: final size is too small for image"
+                      << std::endl;
+            return false;
+        }
+        if (stripe_blocks > image_blocks)
+            stripe_blocks = image_blocks;
+        num_stripes = (image_blocks+stripe_blocks-1) / stripe_blocks;
+        if (num_stripes <= lim)
+            break;
+    }
+    const ssize_t first_blocks = image_blocks - stripe_blocks*(num_stripes-1);
+    const ssize_t first_offset = stripe_blocks - first_blocks;
+        
+    if (num_stripes > 1)
+        std::cout << "note: dividing image into " << num_stripes
+                  << " stripes of " << stripe_blocks
+                  << " blocks each" << std::endl
+                  << "\tfirst stripe has " << first_blocks
+                  << " blocks (offset by " << first_offset << ")"
                   << std::endl
-                  << "\tparity offset by " << stripeoffset << " blocks"
+                  << "\tmarker has " << marker_blocks << " blocks"
                   << std::endl;
     else
         std::cout << "note: image is 1 stripe of "
-                  << stripesize << " blocks" << std::endl;
-    
-    // allocate stripe
-    unique_array<unsigned char> stripe(
-        new unsigned char[stripesize*block_size]);
-    if (stripe.get() == NULL) {
-        std::cerr << "cdrparity: failed to allocate needed memory"
-                  << std::endl;
-        return false;
-    }
+                  << stripe_blocks << " blocks" << std::endl;
 
-    // read first stripe
-    std::cout << "reading stripe #1...\r" << std::flush;
-    if (read(fd,stripe.get(),stripesize*block_size) != stripesize*block_size) {
+    // marker
+    const ssize_t marker_bytes = marker_blocks * block_bytes;
+    std::vector<uint64_t> marker(marker_bytes / sizeof(uint64_t));
+    auto& m0 = *reinterpret_cast<marker_zero*>(marker.data());
+    m0.signature = SIG;
+    m0.block_log2 = ilog2(block_bytes);
+    m0.index = 0;
+    struct timeval tv;
+    if (gettimeofday(&tv, nullptr) != 0) {
         std::cerr << std::endl
-                  << "cdrparity: read failed (" << strerror(errno) << ")"
+                  << "cdrparity: gettimeofday (" << strerror(errno) << ")"
                   << std::endl;
         return false;
     }
+    m0.datetime = tv.tv_sec;
+    m0.datetime = (m0.datetime*(1000*1000) + tv.tv_usec)*1000;
 
-    // read each additional stripe and xor with stripe
-    for (int i = 1; i < nstripes-1; ++i) {
-        std::cout << "reading stripe #" << (i+1) << "... \r" << std::flush;
-        if (!read_and_xor(stripe.get(),stripesize,block_size,fd)) {
+    m0.num_stripes = num_stripes;
+    m0.first_blocks = first_blocks;
+    m0.stripe_blocks = stripe_blocks;
+    m0.image_blocks = image_blocks;
+
+    auto hash_dest = marker.begin() + sizeof(marker_zero) / sizeof(uint64_t);
+    auto hash_lim = m0_lim;
+
+    // parity
+    const auto stripe_bytes = ssize_t(stripe_blocks) * block_bytes;
+    std::vector<unsigned char> parity(stripe_bytes, 0);
+
+    // read first stripe (it may be short)
+    {
+        std::cout << "reading first stripe... \r" << std::flush;
+        siphash_ctx ctx;
+        siphash_init(&ctx,&m0);
+        ++m0.index;
+        if (!read_and_xor(ctx,
+                          parity.data()+first_offset*block_bytes,first_blocks,
+                          block.get(),block_bytes,fd)) {
             std::cerr << std::endl
                       << "cdrparity: read failed (" << strerror(errno) << ")"
                       << std::endl;
             return false;
         }
+        siphash_final(&ctx,&*hash_dest++);
+        --hash_lim;
     }
 
-    // read last stripe (it may be short)
-    if (nstripes > 1) {
-        std::cout << "reading last stripe...     \r" << std::flush;
-        if (!read_and_xor(stripe.get(),laststripesize,block_size,fd)) {
+    // read remaining stripes, hash and xor
+    for (int i = 1; i < num_stripes; ++i) {
+        std::cout << "reading stripe #" << (i+1) << "...   \r" << std::flush;
+        siphash_ctx ctx;
+        siphash_init(&ctx,&m0);
+        ++m0.index;
+        if (!read_and_xor(ctx,parity.data(),stripe_blocks,
+                          block.get(),block_bytes,fd)) {
             std::cerr << std::endl
                       << "cdrparity: read failed (" << strerror(errno) << ")"
                       << std::endl;
             return false;
+        }
+        siphash_final(&ctx,&*hash_dest++);
+        if (--hash_lim == 0) {
+            hash_lim = mi_lim;
+            hash_dest += 2;
         }
     }
     std::cout << "image successfully read and parity calculated"
               << std::endl;
+
+    // hash parity
+    {
+        siphash_ctx ctx;
+        siphash_init(&ctx,&m0);
+        siphash_update(&ctx,parity.data(),stripe_bytes);
+        siphash_final(&ctx,&m0.parity_hash);
+    }
+
+    // hash marker
+    m0.index = 0;
+    for (int i = 1; i < marker_blocks; ++i) {
+        auto& mi = *reinterpret_cast<marker_one*>(
+            marker.data() + i * block_bytes / sizeof(uint64_t));
+        mi.signature = m0.signature;
+        mi.block_log2 = m0.block_log2;
+        mi.index = i;
+    }
+    static const uint8_t zero_key[SIPHASH_KEY_LENGTH] = {0};
+    for (int i = 0; i < marker_blocks; ++i) {
+        auto begin = marker.data() + i * block_bytes / sizeof(uint64_t);
+        siphash_ctx ctx;
+        siphash_init(&ctx,zero_key);
+        siphash_update(&ctx,begin,block_bytes-sizeof(uint64_t));
+        auto end = begin + (block_bytes / sizeof(uint64_t) - 1);
+        siphash_final(&ctx,end);
+    }
     
-    // prepare marker
-    Marker marker;
-    marker.blocksize = block_size;
-    marker.imagesize = imagesize;
-    marker.stripesize = stripesize;
-    marker.nstripes = nstripes;
-    marker.stripeoffset = stripeoffset;
-    marker.set_checksum();
-
-    // prepare marker block
-    assert(block_size % sizeof(marker) == 0);
-    const std::vector<Marker> marker_block(block_size/sizeof(marker),marker);
-
     // write marker
     std::cout << "writing marker..." << std::endl;
-    if (write(fd,marker_block.data(),block_size) != block_size) {
+    if (write(fd,&m0,marker_bytes) != marker_bytes) {
         std::cerr << "cdrparity: write failed (" << strerror(errno) << ")"
                   << std::endl;
         return false;
     }
 
-    // write stripe
+    // write parity
     std::cout << "writing parity data..." << std::endl;
-    const ssize_t main_size = (stripesize-stripeoffset)*block_size;
-    if (stripeoffset > 0) {
-        // write tail of stripe first
-        if (write(fd,
-                  &stripe[main_size],
-                  stripeoffset*block_size) != stripeoffset*block_size) {
-            std::cerr << "cdrparity: write failed (" << strerror(errno) << ")"
-                      << std::endl;
-            return false;
-        }
-    }
-    if (write(fd,stripe.get(),main_size) != main_size) {
+    if (write(fd,parity.data(),stripe_bytes) != stripe_bytes) {
         std::cerr << "cdrparity: write failed (" << strerror(errno) << ")"
                   << std::endl;
         return false;
@@ -325,7 +410,7 @@ static bool process_file(const char* isofile,
   
     // write marker
     std::cout << "writing marker..." << std::endl;
-    if (write(fd,marker_block.data(),block_size) != block_size) {
+    if (write(fd,&m0,marker_bytes) != marker_bytes) {
         std::cerr << "cdrparity: write failed (" << strerror(errno) << ")"
                   << std::endl;
         return false;
@@ -335,17 +420,32 @@ static bool process_file(const char* isofile,
     return true;
 }
 
+static off64_t parse_size(const char* s) {
+    char* end;
+    off64_t result = strtol(s,&end,10);
+    if (strcasecmp(end,"k") == 0)
+        result *= 1024;
+    else if (strcasecmp(end,"m") == 0)
+        result *= 1024*1024;
+    else if (end[0]) {
+        // invalid suffix, should do something?
+    }
+    return result;
+}
+
 static void usage(std::ostream& out) {
     out << "Usage:" << std::endl
         << "  cdrparity [OPTIONS] iso_image ..." << std::endl
-        << "    -s size\tset final size (default: 650M or 700M)" << std::endl
+        << "    -s size\tset final size (default: 650M, 700M, 4482M or 23600M)" << std::endl
         << "    -b size\tset block size (default: 2k)" << std::endl
-        << "    -B size\tmemory use (default: 16M)" << std::endl
+        << "    -B size\tmemory use (default: 64M)" << std::endl
         << "    -p  \tpad to block size" << std::endl
         << "    -f  \tforce adding extra parity" << std::endl
         << "    -S  \tstrip existing parity before starting" << std::endl;
 }
 
+
+/*** main ***/
 
 int main(int argc, char*argv[]) {
     ++argv; --argc;
@@ -356,10 +456,10 @@ int main(int argc, char*argv[]) {
 
     off64_t cdr_size = 0;
     off_t block_size = 2048;
-    off_t buffer_size = 16*MB;
-    bool force = false;
-    bool strip = false;
-    bool pad = false;
+    off_t buffer_size = 64*MB;
+    auto force = false;
+    auto strip = false;
+    auto pad = false;
   
     // parse options
     while (argc > 0 && argv[0][0] == '-') {
@@ -431,7 +531,7 @@ int main(int argc, char*argv[]) {
     }
 
     // check block_size
-    if (block_size < (int)sizeof(Marker)) {
+    if (block_size < 64) {
         std::cerr << "cdrparity: block size too small: " << block_size
                   << std::endl;
         return -1;
@@ -448,7 +548,7 @@ int main(int argc, char*argv[]) {
                   << std::endl;
         return -1;
     }
-    buffer_size = (buffer_size/block_size) * block_size;
+    buffer_size = ((buffer_size+block_size-1)/block_size) * block_size;
 
     // check cdr_size
     if (cdr_size < 0) {
@@ -457,7 +557,7 @@ int main(int argc, char*argv[]) {
         return -1;
     }
     if (cdr_size % block_size) {
-        std::cerr << "cdrparity: final size must be a multiple of the block size: "
+        std::cerr << "cdrparity: final size must be a multiple of block size: "
                   << cdr_size << std::endl;
         return -1;
     }
