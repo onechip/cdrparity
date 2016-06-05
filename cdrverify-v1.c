@@ -125,13 +125,13 @@ ssize_t find_marker_v1(const void* src, size_t len) {
     return -1;
 }
 
-int verify_v1(int in, size_t ofs, void* buf_small, size_t buf_size) {
+int verify_v1(int in, void* _marker) {
 
     size_t i;
     size_t parity_errors;
     uint64_t* marker;
 
-    marker = (uint64_t*)(((char*)buf_small) + ofs);
+    marker = (uint64_t*)_marker;
     if (marker[0] == SIG1R)
         printf("marker needs to be byte-swapped\n");
 

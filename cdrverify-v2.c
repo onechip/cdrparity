@@ -134,10 +134,10 @@ ssize_t find_marker_v2(const void* src, size_t len) {
 }
 
 // returns 0 if successful
-int verify_v2(int in, size_t ofs, void* buf_small, size_t buf_size) {
-    uint16_t* m16 = (uint16_t*)(((char*)buf_small) + ofs);
-    uint32_t* m32 = (uint32_t*)(((char*)buf_small) + ofs);
-    uint64_t* m64 = (uint64_t*)(((char*)buf_small) + ofs);
+int verify_v2(int in, void* _marker) {
+    uint16_t* m16 = (uint16_t*)_marker;
+    uint32_t* m32 = (uint32_t*)_marker;
+    uint64_t* m64 = (uint64_t*)_marker;
 
     const int need_bswap = m32[0] == SIGR;
     if (need_bswap)
