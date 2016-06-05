@@ -82,59 +82,103 @@ static const uint8_t vectors[NVECTORS][SIPHASH_DIGEST_LENGTH] = {
   { 0x72, 0x45, 0x06, 0xeb, 0x4c, 0x32, 0x8a, 0x95, }
 };
 
-int main() {
-    unsigned i;
+static const uint8_t numbers[NVECTORS] = {
+  0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+  0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,
+  0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,
+  0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f,
+  0x20,0x21,0x22,0x23,0x24,0x25,0x26,0x27,
+  0x28,0x29,0x2a,0x2b,0x2c,0x2d,0x2e,0x2f,
+  0x30,0x31,0x32,0x33,0x34,0x35,0x36,0x37,
+  0x38,0x39,0x3a,0x3b,0x3c,0x3d,0x3e,0x3f
+};
 
-    uint8_t k[SIPHASH_KEY_LENGTH];
-    for (i = 0; i < sizeof(k); ++i) k[i] = i;
-
-    uint8_t d[NVECTORS];
-    for (i = 0; i < sizeof(d); ++i) d[i] = i;
-
+static int test1() {
     uint8_t out0[SIPHASH_DIGEST_LENGTH];
     uint8_t out1[SIPHASH_DIGEST_LENGTH];
+
+    unsigned i;
     for (i = 0; i < NVECTORS; ++i) {
-        siphash(out0, d, i, k);
+        siphash(out0, numbers, i, numbers);
         
         siphash_ctx ctx;
-        siphash_init(&ctx, k);
-        siphash_update(&ctx, d, i);
+        siphash_init(&ctx, numbers);
+        siphash_update(&ctx, numbers, i);
         siphash_final(&ctx, out1);
 
         if (memcmp(out0, out1, sizeof(out0)) != 0 ||
             memcmp(out0, vectors[i], sizeof(out0)) != 0 ||
             memcmp(out1, vectors[i], sizeof(out1)) != 0) {
-            fprintf(stderr,"failed: %d\n", i);
-            return 1;
+            fprintf(stdout, " [%d]", i);
+            return 0;
         }
     }
 
-    const uint8_t* key = vectors[0];
-    const uint8_t* data = key + SIPHASH_KEY_LENGTH;
+    return 1;
+}
+
+static int test2() {
+    uint8_t out0[SIPHASH_DIGEST_LENGTH];
+    uint8_t out1[SIPHASH_DIGEST_LENGTH];
+
+    uint8_t key[SIPHASH_KEY_LENGTH];
+    memcpy(key+0, vectors[0], 8);
+    memcpy(key+8, vectors[1], 8);
+
+    static uint8_t data[SIPHASH_DIGEST_LENGTH * (NVECTORS-2)];
+    unsigned i;
+    uint8_t* p = data;
+    for (i = 2; i < NVECTORS; ++i, p += SIPHASH_DIGEST_LENGTH)
+        memcpy(p, vectors[i], SIPHASH_DIGEST_LENGTH);
+    
     unsigned len;
-    for (len = 1; len <= sizeof(vectors) - SIPHASH_KEY_LENGTH - 8; ++len) {
+    for (len = 1; len <= sizeof(data) - SIPHASH_DIGEST_LENGTH; ++len) {
+        p = data;
         unsigned ofs;
-        for (ofs = 0; ofs < 8; ++ofs, ++data) {
-            siphash(out0, data, len, key);
+        for (ofs = 0; ofs < SIPHASH_DIGEST_LENGTH; ++ofs, ++p) {
+            siphash(out0, p, len, key);
 
             unsigned n;
             for (n = 0; n <= len; ++n) {
                 siphash_ctx ctx;
                 siphash_init(&ctx, key);
-                siphash_update(&ctx, data, n);
-                siphash_update(&ctx, data+n, len-n);
+                siphash_update(&ctx, p, n);
+                siphash_update(&ctx, p+n, len-n);
                 siphash_final(&ctx, out1);
 
                 //printf("%d %d %d\n", len, ofs, n);
                 if (memcmp(out0, out1, sizeof(out0)) != 0) {
-                    fprintf(stderr,"failed: %d\n", i);
-                    return 1;
+                    fprintf(stdout, " [%d,%d]", len, ofs);
+                    return 0;
                 }
             }
         }
     }
+
+    return 1;
+}
+
+int main() {
+    int r = 0;
     
-    fprintf(stdout,"siphash good\n");
-    return 0;
+    fprintf(stdout,"test 1:");
+    fflush(stdout);
+    if (test1())
+        fprintf(stdout, " pass\n");
+    else {
+        fprintf(stdout, " FAIL!\n");
+        r = 1;
+    }
+
+    fprintf(stdout,"test 2:");
+    fflush(stdout);
+    if (test2())
+        fprintf(stdout, " pass\n");
+    else {
+        fprintf(stdout, " FAIL!\n");
+        r = 1;
+    }
+
+    return r;
 }
 
