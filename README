@@ -27,7 +27,7 @@ The parity data is calculated as a simple xor of the main data chopped into
 sections each with size equal to the size of the parity data.  This is similar
 to how RAID 5 operates.
 
-The program cdrparity adds this additional data to a pre-generated image.
+The program cdrparity adds the additional data to a pre-generated image.
 Note that simultaneous generation of the image and burning is not supported.
 
 The program cdrverify can be used to verify that the final image is correctly
@@ -35,11 +35,17 @@ formed.  This program was intentionally written in C (instead of C++) and
 shares no code with cdrparity so as to serve as a verification of the correct
 operation of cdrparity.
 
+The program cdrrepair (v2 only) will verify the checksum on each marker, 
+stripe, and the parity data to determine if any are corrupt.  Then, provided
+the number of errors are few, the errors are corrected using the redundant
+data.  Note that this program does not tolerate I/O errors.
+
 The program cdrrescue can be used to recover a disc that has bad sectors.
 What it does is attempt to read sectors (both the data and parity) until
 enough data is read to recover the original image.  Where bad sectors are
 found, the program simply moves on instead of terminating with an error
-or getting stuck in an infinite loop of retries.  
+or getting stuck in an infinite loop of retries.  Note that this program
+has not yet been updated to support v2.  
 
 
 Version 2
@@ -47,6 +53,7 @@ Version 2
 
 With v2 a checksum (siphash24) of each stripe and the parity are calculated
 and stored in the marker.  Without this checksum, the location of errors could
-only be determined if an i/o error occurs.  With the checksum, stripes can be
+only be determined if an I/O error occurs.  With the checksum, stripes can be
 identified as corrupt even in cases where the read was successful.  This
 increases the probability of successfully recovering the image.
+

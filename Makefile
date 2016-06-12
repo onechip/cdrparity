@@ -7,7 +7,9 @@ CFLAGS		= $(PREFFLAGS)
 CXXFLAGS	= $(PREFFLAGS) -std=c++11
 LDFLAGS		=
 
-PROGS	= siphash24_test cdrparity cdrparity-v1 cdrverify cdrrescue
+PROGS	= siphash24_test \
+	  cdrparity cdrparity-v1 \
+	  cdrverify cdrrepair cdrrescue
 
 all:	$(PROGS)
 
@@ -24,6 +26,9 @@ cdrparity-v1:	cdrparity-v1.o Marker.o
 	$(CXXLD) -o $@ $^ $(LDFLAGS)
 
 cdrverify:	cdrverify.o cdrverify-v1.o cdrverify-v2.o siphash24.o
+	$(CXXLD) -o $@ $^ $(LDFLAGS)
+
+cdrrepair:	cdrrepair.o siphash24.o
 	$(CXXLD) -o $@ $^ $(LDFLAGS)
 
 cdrrescue:	cdrrescue.o Marker.o
