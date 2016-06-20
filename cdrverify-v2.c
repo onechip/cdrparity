@@ -260,6 +260,7 @@ int verify_v2(int in, void* _marker) {
         return 1;
     }
     printf("reading first stripe... \r");
+    fflush(stdout);
     if (read(in,stripe,first_bytes) != first_bytes) {
         fprintf(stderr,"cdrverify: read() failed (%s)\n",strerror(errno));
         return 1;
