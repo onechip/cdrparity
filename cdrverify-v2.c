@@ -74,6 +74,21 @@ static void memxor(void* dest, const void* src, size_t n) {
     }
 }
 
+static ssize_t read_large(int fd, void *buf, size_t count) {
+    ssize_t result = 0;
+    while (count > 1024*1024*1024) {
+        ssize_t r = read(fd, buf, 1024*1024*1024);
+        if (r < 0) return r;
+        result += r;
+        if (r != 1024*1024*1024) return result;
+        buf = ((char*)buf) + 1024*1024*1024;
+        count -= 1024*1024*1024;
+    }
+    ssize_t r = read(fd, buf, count);
+    if (r < 0) return r;
+    return result += r;
+}
+
 static int verify_stripe_hash(const void* stripe, size_t stripe_bytes,
                               void* marker, unsigned index,
                               const void* expected_hash) {
@@ -244,7 +259,7 @@ int verify_v2(int in, void* _marker) {
         fprintf(stderr,"cdrverify: lseek() failed (%s)\n",strerror(errno));
         return 1;
     }
-    if (read(in,parity,stripe_bytes) != stripe_bytes) {
+    if (read_large(in,parity,stripe_bytes) != stripe_bytes) {
         fprintf(stderr,"cdrverify: read() failed (%s)\n",strerror(errno));
         return 1;
     }
@@ -261,7 +276,7 @@ int verify_v2(int in, void* _marker) {
     }
     printf("reading first stripe... \r");
     fflush(stdout);
-    if (read(in,stripe,first_bytes) != first_bytes) {
+    if (read_large(in,stripe,first_bytes) != first_bytes) {
         fprintf(stderr,"cdrverify: read() failed (%s)\n",strerror(errno));
         return 1;
     }
@@ -276,7 +291,7 @@ int verify_v2(int in, void* _marker) {
     for (i = 1; i < num_stripes; ++i) {
         printf("reading stripe #%d...    \r",i+1);
         fflush(stdout);
-        if (read(in,stripe,stripe_bytes) != stripe_bytes) {
+        if (read_large(in,stripe,stripe_bytes) != stripe_bytes) {
             fprintf(stderr,"cdrverify: read() failed (%s)\n",strerror(errno));
             return 1;
         }

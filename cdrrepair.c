@@ -73,6 +73,36 @@ static void memxor(void* dest, const void* src, size_t n) {
     }
 }
 
+static ssize_t read_large(int fd, void *buf, size_t count) {
+    ssize_t result = 0;
+    while (count > 1024*1024*1024) {
+        ssize_t r = read(fd, buf, 1024*1024*1024);
+        if (r < 0) return r;
+        result += r;
+        if (r != 1024*1024*1024) return result;
+        buf = ((char*)buf) + 1024*1024*1024;
+        count -= 1024*1024*1024;
+    }
+    ssize_t r = read(fd, buf, count);
+    if (r < 0) return r;
+    return result += r;
+}
+
+static ssize_t write_large(int fd, const void *buf, size_t count) {
+    ssize_t result = 0;
+    while (count > 1024*1024*1024) {
+        ssize_t r = write(fd, buf, 1024*1024*1024);
+        if (r < 0) return r;
+        result += r;
+        if (r != 1024*1024*1024) return result;
+        buf = ((const char*)buf) + 1024*1024*1024;
+        count -= 1024*1024*1024;
+    }
+    ssize_t r = write(fd, buf, count);
+    if (r < 0) return r;
+    return result += r;
+}
+
 static int verify_stripe_hash(const void* stripe, size_t stripe_bytes,
                               void* marker, unsigned index,
                               const void* expected_hash) {
@@ -134,7 +164,7 @@ static int repair_stripe(int fd, off_t ofs, uint8_t* buf,
     printf("re-reading corrupt stripe #%d...", index+1);
     fflush(stdout);
     memset(buf, 0, stripe_bytes);
-    if (read(fd,buf,stripe_bytes) < 0) {
+    if (read_large(fd,buf,stripe_bytes) < 0) {
         printf(" failed!\n");
         fprintf(stderr,"cdrrepair: read() failed (%s)\n",strerror(errno));
         return 0;
@@ -155,7 +185,7 @@ static int repair_stripe(int fd, off_t ofs, uint8_t* buf,
     }
 
     printf("writing stripe #%d...", index+1);
-    if (write(fd,buf,stripe_bytes) != stripe_bytes) {
+    if (write_large(fd,buf,stripe_bytes) != stripe_bytes) {
         printf(" failed!\n");
         fprintf(stderr,"cdrrepair: write() failed (%s)\n",strerror(errno));
         return 0;
@@ -306,7 +336,7 @@ static int repair_v2(int fd, void* _marker) {
     printf("reading parity...");
     fflush(stdout);
     memset(parity, 0, stripe_bytes);
-    if (read(fd,parity,stripe_bytes) < 0) {
+    if (read_large(fd,parity,stripe_bytes) < 0) {
         printf(" failed!\n");
         fprintf(stderr,"cdrrepair: read() failed (%s)\n",strerror(errno));
         return 1;
@@ -328,7 +358,7 @@ static int repair_v2(int fd, void* _marker) {
 
     // read stripes
     printf("reading first stripe... \r");
-    if (read(fd,stripe,first_bytes) != first_bytes) {
+    if (read_large(fd,stripe,first_bytes) != first_bytes) {
         fprintf(stderr,"cdrrepair: read() failed (%s)\n",strerror(errno));
         return 1;
     }
@@ -344,7 +374,7 @@ static int repair_v2(int fd, void* _marker) {
     for (i = 1; i < num_stripes; ++i) {
         printf("reading stripe #%d...    \r",i+1);
         fflush(stdout);
-        if (read(fd,stripe,stripe_bytes) != stripe_bytes) {
+        if (read_large(fd,stripe,stripe_bytes) != stripe_bytes) {
             fprintf(stderr,"cdrrepair: read() failed (%s)\n",strerror(errno));
             return 1;
         }

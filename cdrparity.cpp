@@ -145,6 +145,21 @@ static bool read_and_xor(siphash_ctx& ctx,
     return true;
 }
 
+static ssize_t write_large(int fd, const void *buf, size_t count) {
+    ssize_t result = 0;
+    while (count > 1024*1024*1024) {
+        ssize_t r = write(fd, buf, 1024*1024*1024);
+        if (r < 0) return r;
+        result += r;
+        if (r != 1024*1024*1024) return result;
+        buf = ((const char*)buf) + 1024*1024*1024;
+        count -= 1024*1024*1024;
+    }
+    ssize_t r = write(fd, buf, count);
+    if (r < 0) return r;
+    return result += r;
+}
+
 static bool process_file(const char* isofile,
                          int64_t cdr_bytes,
                          int block_bytes,
@@ -402,7 +417,7 @@ static bool process_file(const char* isofile,
 
     // write parity
     std::cout << "writing parity data..." << std::endl;
-    if (write(fd,parity.data(),stripe_bytes) != stripe_bytes) {
+    if (write_large(fd,parity.data(),stripe_bytes) != stripe_bytes) {
         std::cerr << "cdrparity: write failed (" << strerror(errno) << ")"
                   << std::endl;
         return false;
